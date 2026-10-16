@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tThe Vineyard</title>
+<script src="https://cdn.jsdelivr.net/npm/aframe@1.5.0/dist/aframe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+<style>
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: #0e1020; }
+  #start {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; padding: 24px; text-align: center;
+    background: #0e1020; color: #fff; font-family: system-ui, sans-serif;
+  }
+  #start h1 { margin: 0; font-size: 44px; }
+  #start p { margin: 0; max-width: 28ch; font-size: 18px; line-height: 1.4; }
+  #startBtn {
+    font-size: 22px; font-weight: 700; padding: 16px 40px;
+    border: 0; border-radius: 999px; background: #8e9bff; color: #0e1020;
+  }
+  #startBtn:disabled { opacity: .5; }
+</style>
+</head>
+<body>
+
+<div id="start">
+  <h1>The Vineyard</h1>
+  <p>Tap Start, allow the camera, then point it at the logo.</p>
+  <button id="startBtn" disabled>Loading...</button>
+</div>
+
+<a-scene
+  mindar-image="imageTargetSrc: ./targets.mind; autoStart: false;"
+  color-space="sRGB"
+  renderer="colorManagement: true, physicallyCorrectLights"
+  vr-mode-ui="enabled: false"
+  device-orientation-permission-ui="enabled: false">
+
+  <a-assets>
+    <a-asset-item id="singerModel" src="./singer.glb"></a-asset-item>
+    <a-asset-item id="bassModel"   src="./bass.glb"></a-asset-item>
+    <a-asset-item id="drumsModel"  src="./drums.glb"></a-asset-item>
+  </a-assets>
+
+  <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+  <a-light type="ambient" color="#ffffff" intensity="1.5"></a-light>
+  <a-light type="directional" color="#ffffff" intensity="2" position="0.5 1 1"></a-light>
+
+  <a-entity id="target" mindar-image-target="targetIndex: 0">
+    <!-- rotation="0 0 0"  : logo on a wall or an upright print.
+         rotation="90 0 0" : logo lying flat on a table. -->
+    <a-entity id="stage" rotation="0 0 0">
+      <a-entity class="member" gltf-model="#bassModel"   play-clips position="-0.35 0 0"   scale="0.2 0.2 0.2"></a-entity>
+      <a-entity class="member" gltf-model="#singerModel" play-clips position="0 0 0.05"    scale="0.2 0.2 0.2"></a-entity>
+      <a-entity class="member" gltf-model="#drumsModel"  play-clips position="0.35 0 0"    scale="0.2 0.2 0.2"></a-entity>
+    </a-entity>
+  </a-entity>
+</a-scene>
+
+<script>
+// ---- TUNE START (delete down to TUNE END if you use your own audio file) ----
+function createTune() {
+  const BPM = 132;
+  const EIGHTH = 60 / BPM / 2;       // seconds per eighth note
+  const LOOPS = 2;                   // how many times the 4-bar riff plays
+  const ROOTS = [40, 43, 38, 36];    // bass note per bar: E2, G2, D2, C2
+  // Lead riff: 4 bars of 8 eighth notes. 0 is a rest, other numbers are MIDI notes.
+  const LEAD = [
+    64, 0, 67, 0, 69, 0, 67, 64,
+    67, 0, 71, 0, 74, 0, 71, 67,
+    74, 0, 71, 0, 69, 0, 67, 69,
+    71, 0, 69, 67, 64, 0, 0, 0
+  ];
+  const api = { onend: null };
+  let ctx = null, master = null, endTimer = null;
+
+  const hz = m => 440 * Math.pow(2, (m - 69) / 12);
+
+  function tone(type, freq, t, dur, vol) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + dur + 0.05);
+  }
+
+  function kick(t) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
+    g.gain.setValueAtTime(1, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    o.connect(g); g.connect(master);
+    o.start(t); o.stop(t + 0.25);
+  }
+
+  function noise(t, dur, vol, highpass) {   // snare, hi-hat and crash
+    const len = Math.floor(ctx.sampleRate * dur);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    src.buffer = buf;
+    f.type = 'highpass';
+    f.frequency.value = highpass;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f); f.connect(g); g.connect(master);
+    src.start(t);
+  }
+
+  function stop() {
+    clearTimeout(endTimer);
+    if (master) {
+      master.gain.setTargetAtTime(0, ctx.currentTime, 0.03);
+      master = null;
+    }
+  }
+
+  function play() {
+    if (!ctx) return;
+    stop();
+    master = ctx.createGain();
+    master.gain.value = 0.35;
+    master.connect(ctx.destination);
+    const t0 = ctx.currentTime + 0.1;
+    const steps = LEAD.length * LOOPS;
+    for (let s = 0; s < steps; s++) {
+      const t = t0 + s * EIGHTH;
+      const i = s % 8;                       // position inside the bar
+      const bar = Math.floor(s / 8) % 4;     // which bar of the riff
+      if (i === 0 || i === 4) kick(t);
+      if (i === 2 || i === 6 || (bar === 3 && i >= 5)) noise(t, 0.15, 0.5, 1500);   // snare, plus a fill
+      noise(t, 0.04, 0.15, 7000);                                                    // hi-hat
+      tone('sawtooth', hz(ROOTS[bar]), t, EIGHTH * 0.9, 0.3);                        // bass
+      const n = LEAD[s % LEAD.length];
+      if (n) tone('square', hz(n), t, EIGHTH * 1.6, 0.12);                           // lead
+    }
+    const end = t0 + steps * EIGHTH;         // final power chord and crash
+    [40, 47, 52, 59].forEach(n => tone('sawtooth', hz(n), end, 1.4, 0.18));
+    kick(end);
+    noise(end, 0.9, 0.3, 5000);
+    clearTimeout(endTimer);
+    endTimer = setTimeout(() => { if (api.onend) api.onend(); }, (end + 1.5 - ctx.currentTime) * 1000);
+  }
+
+  api.unlock = () => {                       // call from a tap so phones allow sound
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') ctx.resume();
+  };
+  api.play = play;
+  api.stop = stop;
+  return api;
+}
+const Tune = createTune();
+// ---- TUNE END ----
+
+// Plays the first animation stored inside each .glb file.
+AFRAME.registerComponent('play-clips', {
+  init: function () {
+    this.mixer = null;
+    this.el.addEventListener('model-loaded', (e) => {
+      const model = e.detail.model;
+      if (!model.animations || !model.animations.length) return;
+      this.mixer = new AFRAME.THREE.AnimationMixer(model);
+      this.mixer.clipAction(model.animations[0]).play();
+    });
+  },
+  restart: function () {
+    if (this.mixer) this.mixer.setTime(0);
+  },
+  tick: function (time, delta) {
+    if (this.mixer) this.mixer.update(delta / 1000);
+  }
+});
+
+const sceneEl = document.querySelector('a-scene');
+const assetsEl = document.querySelector('a-assets');
+const startBtn = document.getElementById('startBtn');
+const target = document.getElementById('target');
+let visible = false;
+
+function perform() {
+  Tune.play();
+  document.querySelectorAll('.member').forEach((el) => {
+    const c = el.components['play-clips'];
+    if (c) c.restart();
+  });
+}
+
+function ready() {
+  startBtn.disabled = false;
+  startBtn.textContent = 'Start';
+}
+if (assetsEl.hasLoaded) ready(); else assetsEl.addEventListener('loaded', ready);
+
+startBtn.addEventListener('click', () => {
+  Tune.unlock();                                   // a tap is required before sound can play
+  document.getElementById('start').hidden = true;
+  const go = () => sceneEl.systems['mindar-image-system'].start();
+  if (sceneEl.hasLoaded) go(); else sceneEl.addEventListener('loaded', go);
+});
+
+target.addEventListener('targetFound', () => { visible = true; perform(); });
+target.addEventListener('targetLost', () => { visible = false; Tune.stop(); });
+document.addEventListener('click', () => { if (visible) perform(); });   // tap to replay
+</script>
+</body>
+</html>
